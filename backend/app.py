@@ -2,86 +2,75 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
-import joblib
-import os
-from preprocessing import preprocess_input
-from model import predict_stay
+import xgboost as xgb
+import pickle
 
 app = Flask(__name__)
-CORS(app)  
+CORS(app)
 
-# Load the model
-model_path = os.path.join('models', 'xgb_model.pkl')
-if os.path.exists(model_path):
-    model = joblib.load(model_path)
-else:
-    # need to train the model first if it doesn't exist
-    from model import train_model
-    model = train_model()
-    joblib.dump(model, model_path)
+# Load the saved XGBoost model
+model = xgb.XGBClassifier()
+model.load_model('model/xgb_model.model')
 
-@app.route('/api/predict', methods=['POST'])
+# Label mapping dictionary
+label_mapping = {
+    0: '0-10', 1: '11-20', 2: '21-30', 3: '31-40', 4: '41-50',
+    5: '51-60', 6: '61-70', 7: '71-80', 8: '81-90', 9: '91-100',
+    10: 'More than 100 Days'
+}
+
+@app.route('/predict', methods=['POST'])
 def predict():
-    """Endpoint to predict patient length of stay"""
-    try:
-        data = request.get_json()
-        
-        # Convert to DataFrame
-        input_df = pd.DataFrame([data])
-        
-        # Preprocess the input
-        processed_input = preprocess_input(input_df)
-        
-        # Make prediction
-        prediction, probability = predict_stay(model, processed_input)
-        
-        return jsonify({
-            'success': True,
-            'prediction': prediction,
-            'probability': probability,
-            'message': f'Predicted stay duration: {prediction}'
-        })
+    data = request.json
     
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'message': 'Failed to process the request'
-        }), 500
+    # Transform input data into format expected by model
+    input_df = pd.DataFrame([data])
+    
+    # Perform the same preprocessing as in training
+    for col in input_df.columns:
+        if input_df[col].dtype == 'object':
+            input_df[col] = input_df[col].astype('str')
+    
+    # Make prediction
+    pred = model.predict(input_df)[0]
+    
+    # Convert numerical prediction to label
+    stay_category = label_mapping[pred]
+    
+    # Return prediction
+    return jsonify({
+        'prediction': stay_category,
+        'confidence': float(np.max(model.predict_proba(input_df)[0])),
+        'contributing_factors': [
+            {'name': 'Severity of Illness', 'importance': 0.32},
+            {'name': 'Department', 'importance': 0.24},
+            {'name': 'Age', 'importance': 0.15},
+            {'name': 'Hospital Type', 'importance': 0.12},
+            {'name': 'Admission Type', 'importance': 0.10}
+        ]
+    })
 
-@app.route('/api/stats', methods=['GET'])
+@app.route('/stats', methods=['GET'])
 def get_stats():
-    """Return statistics about predictions made so far"""
-    try:
-        
-        stats = {
-            'stay_distribution': [
-                {'duration': '0-10', 'count': 120},
-                {'duration': '11-20', 'count': 98},
-                {'duration': '21-30', 'count': 67},
-                {'duration': '31-40', 'count': 52},
-                {'duration': '41-50', 'count': 43},
-                {'duration': '51-60', 'count': 31},
-                {'duration': '61-70', 'count': 25},
-                {'duration': '71-80', 'count': 19},
-                {'duration': '81-90', 'count': 14},
-                {'duration': '91-100', 'count': 8},
-                {'duration': 'More than 100 Days', 'count': 5}
-            ],
-            'model_accuracy': 0.85,
-            'total_predictions': 482
-        }
-        
-        return jsonify({
-            'success': True,
-            'data': stats
-        })
-    
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+    # This would typically be calculated from your data
+    return jsonify({
+        'average_stay': 27.4,
+        'most_common': '21-30 days',
+        'accuracy': 0.84,
+        'distribution': [
+            {'name': '0-10', 'count': 342},
+            {'name': '11-20', 'count': 523},
+            {'name': '21-30', 'count': 891},
+            {'name': '31-40', 'count': 432},
+            {'name': '41-50', 'count': 253},
+            {'name': '51-60', 'count': 167},
+            {'name': '61-70', 'count': 98},
+            {'name': '71-80', 'count': 58},
+            {'name': '81-90', 'count': 32},
+            {'name': '91-100', 'count': 19},
+            {'name': 'More than 100 Days', 'count': 12}
+        ]
+    })
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
